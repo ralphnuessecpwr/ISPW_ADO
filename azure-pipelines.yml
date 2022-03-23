@@ -1,0 +1,357 @@
+trigger: none
+
+pool:
+  name: 'Default'
+
+  # Set "runtime" variables
+variables:
+- group: 'mainframe-pipeline-parameters'
+- name: 'gitRepo'
+  value: 'FTSDEMO_$(ispwApplication)_Unit_Tests'
+- name: 'ccSystem'
+  value: 'AZURE_$(ispwContainerName)'
+- name: 'ccDdio'
+  value: 'SALESSUP.$(ispwApplication).$(ispwLevel).LOAD.SSD'
+- name: 'sonarProjectName'
+  value: 'RNU_$(ispwApplication)_Azure'
+- name: 'sonarSources'
+  value: '.\$(ispwApplication)\MF_Source'
+- name: 'tttEnvironment'
+  value: '5b508b8a787be73b59238d38'
+- name: 'testFolderVt'
+  value: 'tests/Virtualized_Tests'
+- name: 'testResultFolderVt'
+  value: './TTTSonar/Virtualized_Tests.cli.suite.sonar.xml'
+- name: 'codeCoverageReportFile'
+  value: 'Coverage/CodeCoverage.xml'
+- name: topazCliWorkspace
+  value: '.\TopazCliWkspc'
+- name: ispwTargetLevel
+  ${{ if eq(variables['ispwLevel'], 'DEV1') }}:
+    value: QA1
+  ${{ elseif eq(variables['ispwLevel'], 'DEV2') }}:
+    value: QA2
+  ${{ else}}:
+    value: QA3
+- name: contextVars
+  value: '"ispw_app=$(ispwApplication),ispw_level=$(ispwTargetLevel)"'
+
+stages:
+- stage: preparation
+  displayName: Preparation
+  jobs:
+  - job: getAssets
+    displayName: Get Assets from Mainframe and GitHub
+    steps:
+
+  # Clear Workspace
+    - task: PowerShell@2
+      inputs:
+        targetType: 'inline'
+        script: |
+          Remove-Item $(workspaceRoot)\* -Recurse -Force
+  
+  # Download Mainframe Sources from ISPW Container
+    # The command line execution is equivalent to the following Jenkins Groovy method call
+    # checkout(
+    #   [
+    #     $class:             'IspwContainerConfiguration', 
+    #     connectionId:       "${pipelineParams.hciConnectionId}",
+    #     credentialsId:      "${pipelineParams.hciToken}", 
+    #     componentType:      '', 
+    #     containerName:      pipelineParams.ispwAssignment, 
+    #     containerType:      '0', // 0 Assignment, 1 Release, 2 Set, 
+    #     ispwDownloadAll:    false, 
+    #     ispwDownloadIncl:   true, 
+    #     serverConfig:       '', 
+    #     serverLevel:        ispwTargetLevel
+    #   ]
+    - task: CmdLine@2
+      displayName: Download Mainframe Code
+      inputs:
+        script: |
+          CD $(workspaceRoot)
+          echo Downloading Mainframe Code using Parameters
+          echo Host IP     : $(hostUri)
+          echo Port        : $(hostPort)
+          echo User ID     : $(hostUser)
+          echo Codepage    : $(hostCodePage)
+          echo ISPW Config : $(ispwConfig)
+          echo Container   : $(ispwContainerName)
+          echo Type        : $(ispwContainerType)
+          echo Level       : $(ispwTargetLevel)
+          
+          $(cliPath)\SCMDownloaderCLI.bat ^
+            -host $(hostUri) ^
+            -port $(hostPort) ^
+            -id $(hostUser) ^
+            -pass $(hostPassword) ^
+            -protocol None ^
+            -code $(hostCodePage) ^
+            -timeout 0 ^
+            -targetFolder .\ ^
+            -data $(topazCliWorkspace) ^
+            -ispwServerConfig $(ispwConfig) ^
+            -scm ispwc ^
+            -ispwContainerName $(ispwContainerName) ^
+            -ispwContainerType $(ispwContainerType) ^
+            -ispwServerLevel $(ispwTargetLevel) ^
+            -ispwDownloadAll true
+
+  # Download Topaz for Total Test Repository from GitHub
+    - task: CmdLine@2
+      displayName: Get Unit Tests
+      inputs:
+        script: |
+          echo Downloading Unit Tests using GitHub Repository $(gitProject)/$(gitRepo)
+          git init $(workspaceRoot)\tests
+          git --version
+          CD $(workspaceRoot)\tests
+          git fetch --tags --progress -- https://github.com/$(gitProject)/$(gitRepo).git +refs/heads/*:refs/remotes/origin/*
+          git config remote.origin.url https://github.com/$(gitProject)/$(gitRepo).git 
+          git config --add remote.origin.fetch +refs/heads/*:refs/remotes/origin/* 
+          git config remote.origin.url https://github.com/$(gitProject)/$(gitRepo).git 
+          git fetch --tags --progress -- https://github.com/$(gitProject)/$(gitRepo).git +refs/heads/*:refs/remotes/origin/*
+          git config core.sparsecheckout 
+          git checkout -f master
+
+- stage: tests
+  displayName: Tests
+  jobs:
+  - job: runTests
+    displayName: Run unit tests and get results
+    steps:
+
+  # Execute Topaz for Total Test Scenarios for Downloaded Sources
+    - task: CmdLine@2
+      displayName: Run Unit Tests
+      inputs:
+        script: |
+          echo Executing Unit Tests using Parameters
+          echo Environment      : $(tttEnvironment)
+          echo User ID          : $(hostUser)
+          echo CES URI          : $(cesUri)
+          echo CES User ID      : $(hostUser)
+          echo Test Folder      : $(testFolderVt)
+          echo CC Repository    : $(ccRepo)
+          echo CC System        : $(ccSystem)
+          echo CC Test ID       : $(ccTestid)
+          echo Context Variables: $(contextVars)
+
+          CD $(workspaceRoot)
+          $(cliPath)\TotalTestFTCLI.bat ^
+              -e $(tttEnvironment) ^
+              -u $(hostUser) ^
+              -p $(hostPassword) ^
+              -s $(cesUri)/totaltestapi/ ^
+              -cesu $(hostUser) ^
+              -cesp $(hostPassword) ^
+              -f $(testFolderVt) ^
+              -pnf changedPrograms.json ^
+              -ccrepo $(ccRepo) ^
+              -ccsys $(ccSystem) ^
+              -cctid $(ccTestid) ^
+              -ccclear true ^
+              -ctxvars $(contextVars) ^
+              -R ^
+              -G ^
+              -v 6 ^
+              -l jenkins ^
+              -loglevel INFO ^
+              -data $(cliWorkpace)
+
+  # Download Code Coverage Results
+    - task: CmdLine@2
+      displayName: Get Code Coverage Results
+      inputs:
+        script: |
+          echo Downloading Code Coverage Results using Parameters
+          echo Host IP        : $(hostUri)
+          echo Port           : $(hostPort)
+          echo User ID        : $(hostUser)
+          echo Codepage       : $(hostCodePage)
+          echo CC Repository  : $(ccRepo)
+          echo CC System      : $(ccSystem)
+          echo CC Test ID     : $(ccTestid)
+          echo Sources Folder : $(ispwApplication)/$(ccSourcesFolder)
+
+          CD $(workspaceRoot)
+          $(cliPath)\CodeCoverageCLI.bat ^
+            -host $(hostUri) ^
+            -port $(hostPort) ^
+            -id $(hostUser) ^
+            -pass $(hostPassword) ^
+            -code $(hostCodePage) ^
+            -targetFolder $(workspaceRoot) ^
+            -data $(topazCliWorkspace) ^
+            -cc.repos $(ccRepo) ^
+            -cc.test $(ccTestid) ^
+            -cc.system $(ccSystem) ^
+            -cc.sources $(ispwApplication)/$(ccSourcesFolder) ^
+            -timeout 0
+
+- stage: qualityGate
+  displayName: Quality Gate
+  jobs:
+  - job: sonar
+    displayName: run Sonar Scan, Check Quality Gate
+    steps:
+
+  # Run Sonar Scanner - Actually it should be run via Extension Code, but still need to figure out how to do
+#    - task: SonarQubePrepare@5    
+#      inputs:
+#        SonarQube: 'SonarQube'
+#        scannerMode: 'CLI'
+#        configMode: 'manual'
+#        cliProjectKey: '$(sonarProjectName)'
+#        cliProjectName: '$(sonarProjectName)'
+#        cliSources: '$(sonarSources)'
+#        extraProperties: |
+#          # Additional properties that will be passed to the scanner, 
+#          # Put one key=value per line, example:
+#          # sonar.exclusions=**/*.bin
+#          sonar.projectBaseDir=$(workspaceRoot)
+#          sonar.ws.timeout=180
+#          sonar.cobol.copy.directories=$(sonarSources)
+#          sonar.cobol.copy.suffixes=cpy
+#          sonar.cobol.file.suffixes=cbl,testsuite,testscenario,stub,results,scenario,context
+#          sonar.tests=$(testFolderVt)
+#          sonar.testExecutionReportPaths=$(testResultFolderVt)
+#          sonar.coverageReportPaths=$(codeCoverageReportFile)
+#    - task: SonarQubeAnalyze@5
+#    - task: SonarQubePublish@5
+#      inputs:
+#        pollingTimeoutSec: '300'
+
+  # Run Sonar Scanner using the CLI instead
+    - task: CmdLine@2
+      displayName: Run Sonar Scanner
+      inputs:
+        script: |
+          "$(sonarScannerPath)\sonar-scanner" ^
+            "-Dsonar.host.url=$(sonarServer)" ^
+            "-Dsonar.projectBaseDir=$(workspaceRoot)" ^
+            "-Dsonar.ws.timeout=300" ^
+            "-Dsonar.projectKey=$(sonarProjectName)" ^
+            "-Dsonar.projectName=$(sonarProjectName)" ^
+            "-Dsonar.projectVersion=1.0" ^
+            "-Dsonar.sources=$(sonarSources)" ^
+            "-Dsonar.cobol.copy.directories=$(sonarSources)" ^
+            "-Dsonar.cobol.copy.suffixes=cpy" ^
+            "-Dsonar.cobol.file.suffixes=cbl,testsuite,testscenario,stub,results,scenario,context" ^
+            "-Dsonar.tests=$(testFolderVt)" ^
+            "-Dsonar.testExecutionReportPaths=$(testResultFolderVt)" ^
+            "-Dsonar.coverageReportPaths=$(codeCoverageReportFile)"
+
+  - job: checkQualityGate
+    displayName: Check Quality Gate
+    dependsOn: sonar
+  
+  # Query result of Sonar Quality Gate and set EXITCODE accordingly    
+    steps:
+    - task: PowerShell@2
+      displayName: Check Sonar Quality Gate
+      inputs:
+        targetType: 'inline'
+        script: |
+          $uri = "$(sonarServer)/api/qualitygates/project_status?projectKey=$(sonarProjectName)"
+
+          $headers = @{}
+          $headers.Add("Authorization", '"$(sonarAuthorization)"')
+          $headers.Add("Content-Type", "application/json")
+
+          Write-Host "Checking Sonar Quality Gate Status for Project "$(sonarProjectName)"."
+          Write-Host "URL"
+          Write-Host $uri
+
+          $response = Invoke-RestMethod -Uri $uri -method GET -headers $headers
+          
+          $status = $response.projectStatus.status
+          
+          Write-Host "Checked Sonar Quality Gate status for Project "$(sonarProjectName)"."
+          Write-Host "Status is "$status"."
+          
+          if($status -ne "OK"){
+              $LASTEXITCODE = 1
+          }
+          else
+          {
+              $LASTEXITCODE = 0
+          }
+
+  # Trigger Azure Release Pipeline if Sonar Quality Gate is OK
+  - job: triggerRelease
+    displayName: Trigger Release Pipeline
+    dependsOn: 
+    - checkQualityGate
+    condition: succeeded('checkQualityGate')
+    steps:
+    - task: PowerShell@2
+      displayName: Trigger Release
+      inputs:
+        targetType: 'inline'
+        script: |
+          $uri = "$(azureRestAddress)/$(azureOrganization)/$(System.TeamProject)/_apis/release/releases?api-version=5.1"
+
+          $headers = @{}
+          $headers.Add("Authorization", "$(azureRestAuthorization)")
+          $headers.Add("Content-Type", "application/json")
+
+          Write-Host $releaseDefinitionId
+
+          $requestBody = '{
+            "definitionId": "$(releaseDefinitionId)",
+            "variables": {
+              "ispwApplication": {
+                "value": "$(ispwApplication)"
+              },
+              "ispwContainerName": {
+                "value": "$(ispwContainerName)"
+              },
+              "ispwContainerType": {
+                "value": "$(ispwContainerType)"
+              },
+              "ispwLevel": {
+                "value": "$(ispwTargetLevel)"
+              } 
+            }
+          }'
+
+          Write-Host "Triggering Azure Release using REST API:"
+          Write-Host "URL"
+          Write-Host $uri
+          Write-Host "Body"
+          Write-Host $requestBody
+
+          $response = Invoke-RestMethod -Uri $uri -method POST -headers $headers -body $requestBody
+
+          Write-Host "Response"
+          Write-Host $response
+
+  # Regress ISPW Assignment if Sonar Quality Gate is NOT OK
+  - job: regressAssignment
+    displayName: Regress Assignment
+    dependsOn: 
+    - checkQualityGate
+    condition: failed('checkQualityGate')
+    steps:
+    - task: PowerShell@2
+      displayName: Regress Assignment
+      inputs:
+        targetType: 'inline'
+        script: |
+          $uri = "$(cesUri)/ispw/$(ispwConfig)/assignments/$(ispwContainerName)/tasks/regress?level=$(ispwTargetLevel)"
+
+          $hash = @{}
+          $hash.add("runtimeConfiguration", "$(ispwConfig)")
+
+          $body = ConvertTo-Json($hash)
+
+          $headers = @{}
+          $headers.Add("Authorization", "$(cesToken)")
+          $headers.Add("Content-Type", "application/json")
+          
+          $response = Invoke-RestMethod -Uri $uri -method POST -headers $headers -body $body
+          
+          Write-Host Regressed Tasks in Assignment $(ispwContainerName).
+          Write-Host $response

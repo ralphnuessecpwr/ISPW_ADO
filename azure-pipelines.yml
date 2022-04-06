@@ -202,7 +202,7 @@ stages:
       inputs:
         testResultsFormat: 'JUnit'
         testResultsFiles: '**/*.junit.xml'
-        searchFolder: './TTTUnit'      
+        searchFolder: '$(workspaceRoot)/TTTUnit'      
         testRunTitle: 'Build_$(Build.BuildNumber)'
 
 - stage: qualityGate

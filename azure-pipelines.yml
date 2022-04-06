@@ -190,6 +190,21 @@ stages:
             -cc.sources $(ispwApplication)/$(ccSourcesFolder) ^
             -timeout 0
 
+  - job: publishTestResults
+    displayName: Publish Test Results to Azure
+    dependsOn: 
+    - runTests
+    condition: succeeded('runTests')
+    steps:
+    - checkout: none
+    - task: PublishTestResults@2
+      displayName: 'Publish Test Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/*.junit.xml'
+        searchFolder: './TTTUnit'      
+        testRunTitle: 'Build_$(Build.BuildNumber)'
+
 - stage: qualityGate
   displayName: Quality Gate
   jobs:
